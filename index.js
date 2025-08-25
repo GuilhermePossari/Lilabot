@@ -75,7 +75,7 @@ app.post('/webhook', async (req, res) => {
       // outros textos → resposta padrão
       await axios.post(
         `${GRAPH}/${PHONE_NUMBER_ID}/messages`,
-        { messaging_product: 'whatsapp', to: from, type: 'text', text: { body: 'Oi! Manda uma foto que eu viro figurinha 😎' } },
+        { messaging_product: 'whatsapp', to: from, type: 'text', text: { body: 'Oi, Helo! Me manda uma foto que eu faço virar figurinha 😎' } },
         { headers: auth() }
       );
       return res.sendStatus(200);
@@ -153,7 +153,7 @@ app.post('/webhook', async (req, res) => {
         console.error('Erro sticker:', JSON.stringify(data, null, 2));
         await axios.post(
           `${GRAPH}/${PHONE_NUMBER_ID}/messages`,
-          { messaging_product: 'whatsapp', to: from, type: 'text', text: { body: '❌ Não consegui gerar a figurinha. Tenta outra imagem?' } },
+          { messaging_product: 'whatsapp', to: from, type: 'text', text: { body: '❌ Não consegui gerar a figurinha. Manda mensagem pro Possari 😞😢' } },
           { headers: auth() }
         );
       }
@@ -163,7 +163,7 @@ app.post('/webhook', async (req, res) => {
     // === Outros tipos → padrão
     await axios.post(
       `${GRAPH}/${PHONE_NUMBER_ID}/messages`,
-      { messaging_product: 'whatsapp', to: from, type: 'text', text: { body: 'Oi! Manda uma foto que eu viro figurinha 😎' } },
+      { messaging_product: 'whatsapp', to: from, type: 'text', text: { body: 'Oi, Helo! Manda uma foto que eu faço virar figurinha 😎' } },
       { headers: auth() }
     );
 
