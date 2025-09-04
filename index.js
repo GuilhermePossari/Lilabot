@@ -9,7 +9,7 @@ const fs = require('fs');
 const app = express();
 app.use(express.json({ limit: '10mb' }));
 
-const GRAPH = 'https://graph.facebook.com/v20.0';
+const GRAPH = 'https://graph.facebook.com/v23.0';
 const { VERIFY_TOKEN, PHONE_NUMBER_ID, PORT = 3000 } = process.env;
 
 // ===== Gemini (REST) =====
@@ -20,7 +20,7 @@ const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GE
 // headers Meta
 const auth = () => ({ Authorization: `Bearer ${process.env.WHATS_TOKEN}` });
 
-// ===== Persistência simples (contador) =====
+// ===== Persistências =====
 const DB_FILE = './contagem.json';
 const db = fs.existsSync(DB_FILE)
   ? JSON.parse(fs.readFileSync(DB_FILE))
@@ -33,32 +33,15 @@ const incCont = (jid, tipo='geral') => {
   db.porUsuario[jid] = (db.porUsuario[jid] || 0) + 1;
   saveDB();
 };
-const resumo = (jid) =>
-  `📊 Contador de Piadas
-Total do bot: ${db.total}
-Seu total: ${db.porUsuario[jid]||0}
-Por tipo: geral=${db.porTipo.geral||0}, med=${db.porTipo.med||0}`;
-const top = (n=5) => {
-  const a = Object.entries(db.porUsuario).sort((x,y)=>y[1]-x[1]).slice(0,n);
-  return a.length
-    ? '🏆 Top contadores\n' + a.map(([j,c],i)=>`${i+1}. ${j.split('@')[0]} — ${c}`).join('\n')
-    : '🏆 Top contadores\nSem dados ainda.';
-};
 
-// ===== Sessões (modo pergunta + persona Lila) =====
 const SESS_FILE = './sessions.json';
-// Estrutura: { jid: { mode: 'default'|'chat', personaOn: boolean, history: [{role:'user'|'model', text}] } }
+// { jid: { mode: 'normal'|'pergunta', personaOn: boolean, history:[{role,text}] } }
 const sessions = fs.existsSync(SESS_FILE) ? JSON.parse(fs.readFileSync(SESS_FILE)) : {};
 const saveSess = () => fs.writeFileSync(SESS_FILE, JSON.stringify(sessions, null, 2));
-
-const ensureSess = (jid) => {
-  if (!sessions[jid]) {
-    sessions[jid] = { mode: 'default', personaOn: false, history: [] };
-  }
-};
+const ensureSess = (jid) => { if (!sessions[jid]) sessions[jid] = { mode:'normal', personaOn:false, history:[] }; };
 const setMode = (jid, mode) => { ensureSess(jid); sessions[jid].mode = mode; saveSess(); };
-const getMode = (jid) => (sessions[jid]?.mode || 'default');
-const setPersona = (jid, on) => { ensureSess(jid); sessions[jid].personaOn = !!on; saveSess(); };
+const togglePersona = (jid) => { ensureSess(jid); sessions[jid].personaOn = !sessions[jid].personaOn; saveSess(); return sessions[jid].personaOn; };
+const getMode = (jid) => (sessions[jid]?.mode || 'normal');
 const isPersona = (jid) => !!(sessions[jid]?.personaOn);
 const pushHistory = (jid, role, text) => {
   ensureSess(jid);
@@ -68,100 +51,59 @@ const pushHistory = (jid, role, text) => {
 };
 const clearHistory = (jid) => { ensureSess(jid); sessions[jid].history = []; saveSess(); };
 
-// ===== Fallback piadas =====
+// ===== Piadas fallback =====
 const FB_GERAL = [
-  `Por que o livro de matemática estava triste?\n\nPorque tinha muitos problemas.`,
-  `O que o zero disse pro oito?\n\nBela cinta!`,
+  'Meu relógio quebrou… agora vivo no horário do “tanto faz”.',
+  'Tentei fazer dieta. A geladeira tentou me sabotar. Ganhou.',
+  'Fui correr na esteira… a esteira fugiu. Sinal de que não era pra hoje.',
+  'Comprei um despertador silencioso. Ele não toca. Perfeito!',
+  'Meu plano fitness: pular conclusões e correr dos boletos.',
 ];
 const FB_MED = [
-  `Paciente: "Doutor, estou vendo tudo dobrado!"\n\nMédico: "Sente ali."\nPaciente: "Em qual das quatro cadeiras?"`,
-  `Estudante: "Decorei todos os ossos!"\n\nAmigo: "De cor?"\n"Não, de dor."`,
+  'Na prova prática me pediram “calma”: achei que era um medicamento novo.',
+  'Plantão de 12 horas: também conhecido como “um minuto de paz parcelado em 720 vezes”.',
+  'Anatomia é linda… até você decorar que temos mais nervos do que paciência.',
+  'Estetoscópio é tipo Wi-Fi do médico: sem ele a gente nem conecta no paciente.',
+  'Passei tanto tempo no hospital que tô pensando em pagar condomínio.',
 ];
 
-// ===== Intenções/Regex =====
-const REG_PEDIR_PIADA = /\b(piada|piadinha|me conta|me conte|conta uma|conte uma|manda uma)\b/i;
-const REG_MED = /\b(med|medicina|médic|anatomia|hospital|plantão|residênc|clínic|cirurg)\b/i;
-const querPiada = (t) => REG_PEDIR_PIADA.test(t||'');
-const isMedText = (t) => REG_MED.test(t||'');
+// ===== Intenções =====
+const REG_PIADA = /(me conte uma piada|conte uma piada|conta uma piada|manda uma piada)/i;
+const REG_PIADA_MED = /(piada sobre medicina|piada de medicina|piada de med|piada médica|piada de anatomia|piada de plantão)/i;
+const REG_MODO_NORMAL = /^modo\s+normal$/i;
+const REG_MODO_PERGUNTA = /^modo\s+pergunta$/i;
+const REG_MODO_LILA = /^modo\s+lila$/i;
 
-const CMD_PERGUNTA_ON = /^!pergunta\s+on\b/i;
-const CMD_PERGUNTA_OFF = /^!pergunta\s+off\b/i;
-const ONE_SHOT_Q_CMD = /^!pergunta\s+(.+)/i;
-const ONE_SHOT_Q_TXT = /^(?:\?+|pergunta:\s*)(.+)/i;
-const extraiPergunta = (raw) => {
-  const a = ONE_SHOT_Q_CMD.exec(raw); if (a?.[1]) return a[1].trim();
-  const b = ONE_SHOT_Q_TXT.exec(raw); if (b?.[1]) return b[1].trim();
-  return null;
-};
-
-// ===== Persona Lila =====
-const personaHeader = `
-Você é **Lila**, uma spitz alemã branquinha (cachorrinha dócil e brincalhona).
-Sua humana é a **Helo**, uma garota ruiva linda que estuda **Medicina**.
-Sua irmã é a **Dory Maria**, uma **lhasa** branca e gordinha.
-Fale em **português do Brasil**, com tom carinhoso, divertido e leve.
-Mantenha segurança: sem informações médicas/legais específicas; seja respeitosa.
-Quando fizer piadas, mantenha o formato:
-Setup
-
-Punchline
-`.trim();
-
-// envelopa qualquer prompt com a persona quando ligada
-const withPersona = (basePrompt) =>
-  `${personaHeader}\n\n---\n\nTarefa:\n${basePrompt}`;
+// ===== Persona (não repetir em toda resposta; só influencia o tom) =====
+const personaHint = `Responda no tom de “Lila”, uma spitz branca carinhosa e brincalhona. Ela é da Helo (ruiva, estudante de Medicina) e irmã da Dory Maria (lhasa branca fofinha). Seja calorosa, espirituosa e leve, sem repetir essa descrição.`;
 
 // ===== Prompts =====
-const pPiadaGeral = () => `
-Gere UMA piada curta, em português do Brasil.
-Formato:
-Setup da piada
-
-Punchline da piada
-Regras:
-- 2 a 6 frases.
-- Tom leve, sem ofensas/estigmas.
-- Sem nomes reais, diagnósticos específicos ou dados pessoais.
+const promptPiada = (isMed=false) => `
+Escreva UMA piada curta, em português do Brasil, com humor leve e timing natural. Nada de títulos como “Setup” ou “Punchline”.
+Tema: ${isMed ? 'vida de estudantes/profissionais de Medicina (sem estigmatizar doenças/pacientes)' : 'cotidiano geral'}.
+Evite nomes reais e conteúdo sensível. Soe natural como conversa de WhatsApp.
 `.trim();
 
-const pPiadaMed = () => `
-Gere UMA piada curta sobre MEDICINA (vida de estudantes/profissionais), em português do Brasil.
-Formato:
-Setup da piada
-
-Punchline da piada
-Regras:
-- 2 a 6 frases.
-- Tom leve, não ofensivo; sem estigmatizar doenças/pacientes; sem conteúdo antiético.
-- Evite diagnósticos específicos e dados pessoais.
-`.trim();
-
-const pPerguntaOneShot = (q) => `
-Responda, de forma concisa (até ~8 linhas), à pergunta abaixo:
+const promptPergunta = (q) => `
+Responda de forma útil e concisa (até ~8 linhas) à pergunta:
 "${q}"
-Seja direto, útil e seguro. Se o tema for delicado (saúde, legal, financeiro), ofereça informações gerais e ressalvas apropriadas.
+Se o tema for sensível (saúde/finanças/lei), traga informações gerais e ressalvas. Seja direto, claro e gentil.
 `.trim();
 
-// ===== Gemini helpers =====
-async function geminiGenerate(prompt, historyParts = null) {
+// ===== Gemini =====
+async function geminiGenerate({ prompt, historyParts = null, persona = false }) {
   if (!GEMINI_KEY) throw new Error('GEMINI_API_KEY ausente');
-
   const contents = [];
-  if (historyParts && historyParts.length) {
-    for (const p of historyParts) {
-      contents.push({
-        role: p.role === 'model' ? 'model' : 'user',
-        parts: [{ text: p.text }],
-      });
-    }
+
+  if (historyParts?.length) {
+    for (const p of historyParts) contents.push({ role: p.role === 'model' ? 'model' : 'user', parts: [{ text: p.text }] });
   }
-  contents.push({ role: 'user', parts: [{ text: prompt }] });
 
-  const body = {
-    contents,
-    generationConfig: { temperature: 0.9, maxOutputTokens: 220 },
-  };
+  // Sem repetir persona toda hora: é só uma dica de estilo dentro do prompt atual
+  const finalPrompt = persona ? `${personaHint}\n\n${prompt}` : prompt;
+  contents.push({ role: 'user', parts: [{ text: finalPrompt }] });
 
+  const body = { contents, generationConfig: { temperature: 0.95, maxOutputTokens: 220 } };
   const { data } = await axios.post(GEMINI_URL, body, { timeout: 20000 });
   const text = data?.candidates?.[0]?.content?.parts?.map(p => p.text).join('').trim();
   if (!text) throw new Error('Gemini sem texto');
@@ -170,21 +112,17 @@ async function geminiGenerate(prompt, historyParts = null) {
 
 // ===== WhatsApp helpers =====
 async function sendText(to, body) {
-  return axios.post(
-    `${GRAPH}/${PHONE_NUMBER_ID}/messages`,
+  return axios.post(`${GRAPH}/${PHONE_NUMBER_ID}/messages`,
     { messaging_product: 'whatsapp', to, type: 'text', text: { body } },
-    { headers: auth() }
-  );
+    { headers: auth() });
 }
 async function sendStickerById(to, stickerId) {
-  return axios.post(
-    `${GRAPH}/${PHONE_NUMBER_ID}/messages`,
+  return axios.post(`${GRAPH}/${PHONE_NUMBER_ID}/messages`,
     { messaging_product: 'whatsapp', to, type: 'sticker', sticker: { id: stickerId } },
-    { headers: auth() }
-  );
+    { headers: auth() });
 }
 
-// ===== Verificação de webhook =====
+// ===== Webhook verify =====
 app.get('/webhook', (req, res) => {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
@@ -193,7 +131,7 @@ app.get('/webhook', (req, res) => {
   return res.sendStatus(403);
 });
 
-// ===== Webhook de mensagens =====
+// ===== Webhook =====
 app.post('/webhook', async (req, res) => {
   try {
     const entry = req.body?.entry?.[0]?.changes?.[0]?.value;
@@ -208,132 +146,88 @@ app.post('/webhook', async (req, res) => {
       const raw = (msg.text?.body || '').trim();
       const text = raw.toLowerCase();
 
-      // Obrigado → sticker automático
+      // “obrigado/obrigada” → sticker pronto (opcional)
       if (text.includes('obrigada') || text.includes('obrigado')) {
         const s1 = process.env.LILA_ID_1;
         const s2 = process.env.DORY_ID_1;
         const stickers = [s1, s2].filter(Boolean);
         if (stickers.length) {
-          const pick = stickers[Math.floor(Math.random() * stickers.length)];
-          try { await sendStickerById(from, pick); }
-          catch (e) { await sendText(from, '💛 de nada! (mande uma imagem que viro figurinha 😉)'); }
-        } else {
-          await sendText(from, 'Recebi seu “obrigada”! Configure LILA_ID_1/DORY_ID_1 para eu mandar figurinhas 😊');
+          try { await sendStickerById(from, stickers[Math.floor(Math.random()*stickers.length)]); }
+          catch { /* silencia */ }
         }
+        // não precisa responder texto sempre
         return res.sendStatus(200);
       }
 
-      // Contador/Ranking
-      if (/^!conta\b/i.test(text)) { await sendText(from, resumo(from)); return res.sendStatus(200); }
-      if (/^!top\b/i.test(text)) { await sendText(from, top(5)); return res.sendStatus(200); }
-
-      // Ajuda
-      if (/^!help\b/i.test(text)) {
-        const persona = isPersona(from) ? 'ON' : 'OFF';
-        const mode = getMode(from) === 'chat' ? 'ON' : 'OFF';
-        await sendText(from,
-`Comandos:
-!piada           → piada geral
-!piada med       → piada sobre medicina
-!conta           → sua contagem + total
-!top             → ranking de piadas
-!pergunta on/off → liga/desliga modo chat (Gemini). Status: ${mode}
-!pergunta TEXTO  → pergunta pontual (one-shot)
-? TEXTO          → idem
-!lila on/off     → liga/desliga persona Lila. Status: ${persona}
-!lila status     → mostra status da persona
-
-Dica: mande "me conte uma piada" (se falar de medicina, faço piada de med).
-Envie imagem com legenda "!sticker" para criar figurinha.`);
+      // ===== Modo normal / pergunta / Lila (sem exclamações) =====
+      if (REG_MODO_NORMAL.test(raw)) {
+        setMode(from, 'normal'); // não mexe na persona
+        clearHistory(from);
+        await sendText(from, 'Oi, Helo! Mande uma foto pra virar figurinha, digite "Modo pergunta" pra falar com o Gemini, "Modo Lila" pra falar com a Lila (mais ou menos kkk), "conte uma piada/piada sobre medicina" ou "Modo Normal" pra ver essa mensagem de novo! Beijão.');
         return res.sendStatus(200);
       }
 
-      // Persona Lila ON/OFF/STATUS
-      if (/^!lila\s+on\b/i.test(text)) { setPersona(from, true); await sendText(from, '🐶 Modo Lila: ON'); return res.sendStatus(200); }
-      if (/^!lila\s+off\b/i.test(text)) { setPersona(from, false); await sendText(from, '🐶 Modo Lila: OFF (Gemini comum)'); return res.sendStatus(200); }
-      if (/^!lila\s+status\b/i.test(text)) {
-        await sendText(from, `🐶 Modo Lila está: ${isPersona(from) ? 'ON' : 'OFF'}`);
+      if (REG_MODO_PERGUNTA.test(raw)) {
+        setMode(from, 'pergunta');
+        await sendText(from, isPersona(from)
+          ? '💬 Modo Pergunta ON (com jeitinho da Lila). Manda sua pergunta!'
+          : '💬 Modo Pergunta ON. Manda sua pergunta!');
         return res.sendStatus(200);
       }
 
-      // Modo pergunta (chat) ON/OFF
-      if (CMD_PERGUNTA_ON.test(text)) { setMode(from, 'chat'); await sendText(from, '💬 Modo Pergunta: ON. Pode mandar suas perguntas!'); return res.sendStatus(200); }
-      if (CMD_PERGUNTA_OFF.test(text)) { setMode(from, 'default'); clearHistory(from); await sendText(from, '💬 Modo Pergunta: OFF.'); return res.sendStatus(200); }
+      if (REG_MODO_LILA.test(raw)) {
+        const on = togglePersona(from); // liga/desliga com o mesmo comando
+        await sendText(from, on ? '🐶 Modo Lila ON.' : '🐶 Modo Lila OFF (Gemini comum).');
+        return res.sendStatus(200);
+      }
 
-      // Pergunta one-shot
-      const perguntaPontual = extraiPergunta(raw);
-      if (perguntaPontual) {
+      // ===== Piadas por linguagem natural =====
+      if (REG_PIADA_MED.test(text) || /piada.*(med|médic|medicina|plantão|anatomia)/i.test(text)) {
         try {
-          const base = pPerguntaOneShot(perguntaPontual);
-          const prompt = isPersona(from) ? withPersona(base) : base;
-          const resp = await geminiGenerate(prompt);
-          await sendText(from, resp);
-        } catch (e) {
-          await sendText(from, 'Não consegui responder agora 😞. Tente novamente em instantes.');
-        }
-        return res.sendStatus(200);
-      }
-
-      // Piadas via comando
-      if (/^!piada(\s+med)?\b/i.test(text)) {
-        const isMed = /\bmed\b/i.test(text);
-        try {
-          const base = isMed ? pPiadaMed() : pPiadaGeral();
-          const prompt = isPersona(from) ? withPersona(base) : base;
-          const joke = await geminiGenerate(prompt);
-          incCont(from, isMed ? 'med' : 'geral');
+          const joke = await geminiGenerate({ prompt: promptPiada(true), persona: isPersona(from) });
+          incCont(from, 'med');
           await sendText(from, joke);
-        } catch (e) {
-          const fb = (isMed ? FB_MED : FB_GERAL);
-          const pick = fb[Math.floor(Math.random() * fb.length)];
-          incCont(from, isMed ? 'med' : 'geral');
+        } catch {
+          const pick = FB_MED[Math.floor(Math.random()*FB_MED.length)];
+          incCont(from, 'med');
           await sendText(from, pick);
         }
         return res.sendStatus(200);
       }
 
-      // Piadas via linguagem natural
-      if (querPiada(text)) {
-        const med = isMedText(text);
+      if (REG_PIADA.test(text) || /\bpiada\b/i.test(text)) {
         try {
-          const base = med ? pPiadaMed() : pPiadaGeral();
-          const prompt = isPersona(from) ? withPersona(base) : base;
-          const joke = await geminiGenerate(prompt);
-          incCont(from, med ? 'med' : 'geral');
+          const joke = await geminiGenerate({ prompt: promptPiada(false), persona: isPersona(from) });
+          incCont(from, 'geral');
           await sendText(from, joke);
-        } catch (e) {
-          const fb = (med ? FB_MED : FB_GERAL);
-          const pick = fb[Math.floor(Math.random() * fb.length)];
-          incCont(from, med ? 'med' : 'geral');
+        } catch {
+          const pick = FB_GERAL[Math.floor(Math.random()*FB_GERAL.length)];
+          incCont(from, 'geral');
           await sendText(from, pick);
         }
         return res.sendStatus(200);
       }
 
-      // Modo chat (Gemini) ligado → toda mensagem vira pergunta
-      if (getMode(from) === 'chat') {
+      // ===== Modo pergunta ligado → tudo vira pergunta pro Gemini =====
+      if (getMode(from) === 'pergunta') {
         try {
-          // histórico como está, adicionamos a persona no "system-like" do prompt atual
-          const base = raw;
-          const prompt = isPersona(from) ? withPersona(base) : base;
           const hist = sessions[from]?.history || [];
-          const resp = await geminiGenerate(prompt, hist);
+          const resp = await geminiGenerate({ prompt: raw, historyParts: hist, persona: isPersona(from) });
           pushHistory(from, 'user', raw);
           pushHistory(from, 'model', resp);
           await sendText(from, resp);
-        } catch (e) {
+        } catch {
           await sendText(from, 'Não consegui responder agora 😞. Tente novamente em instantes.');
         }
         return res.sendStatus(200);
       }
 
-      // Padrão (modo normal): mantém seu comportamento original
-      await sendText(from,
-        'Oi! 👋 Manda uma foto com a legenda "!sticker" que eu viro figurinha 😎\n\nNovidades:\n- !piada / !piada med\n- !pergunta on/off, !pergunta TEXTO, ? TEXTO\n- !lila on/off/status (persona da Lila)');
+      // ===== Mensagem padrão quando em modo normal =====
+      await sendText(from, 'Oi, Helo! Mande uma foto pra virar figurinha, digite "Modo pergunta" pra falar com o Gemini, "Modo Lila" pra falar com a Lila (mais ou menos kkk), "conte uma piada/piada sobre medicina" ou "Modo Normal" pra ver essa mensagem de novo! Beijão.');
       return res.sendStatus(200);
     }
 
-    // ===== IMAGEM → figurinha =====
+    // ===== IMAGEM → figurinha automática =====
     if (type === 'image') {
       try {
         const mediaId = msg.image.id;
@@ -346,48 +240,42 @@ Envie imagem com legenda "!sticker" para criar figurinha.`);
         let q = 80;
         async function makeWebp(quality) {
           return sharp(imgBuf)
-            .resize(512, 512, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
+            .resize(512, 512, { fit: 'contain', background: { r:0,g:0,b:0,alpha:0 } })
             .webp({ quality })
             .toBuffer();
         }
         let webp = await makeWebp(q);
-        while (webp.length > 100 * 1024 && q >= 40) {
-          q -= 5;
-          webp = await makeWebp(q);
-        }
+        while (webp.length > 100 * 1024 && q >= 40) { q -= 5; webp = await makeWebp(q); }
 
         const form = new FormData();
         form.append('messaging_product', 'whatsapp');
         form.append('type', 'sticker');
         form.append('file', webp, { filename: 'sticker.webp', contentType: 'image/webp' });
 
-        const up = await axios.post(`${GRAPH}/${PHONE_NUMBER_ID}/media`, form, {
-          headers: { ...auth(), ...form.getHeaders() }
-        });
+        const up = await axios.post(`${GRAPH}/${PHONE_NUMBER_ID}/media`, form, { headers: { ...auth(), ...form.getHeaders() } });
         const stickerId = up.data.id;
 
         await new Promise(r => setTimeout(r, 600));
-        await axios.post(
-          `${GRAPH}/${PHONE_NUMBER_ID}/messages`,
+        await axios.post(`${GRAPH}/${PHONE_NUMBER_ID}/messages`,
           { messaging_product: 'whatsapp', to: from, type: 'sticker', sticker: { id: stickerId } },
-          { headers: auth() }
-        );
+          { headers: auth() });
 
-        await sendText(from, '✅ Pra você! 🌹');
+        // opcional: mandar um coraçãozinho depois
+        // await sendText(from, isPersona(from) ? '💖 Amei a foto!' : '✅ Figurinha enviada!');
       } catch (e) {
-        await sendText(from, '❌ Não consegui gerar a figurinha. Manda mensagem pro Possari 😞😢');
+        await sendText(from, '❌ Não consegui gerar a figurinha. Me manda de novo?');
       }
       return res.sendStatus(200);
     }
 
-    // ===== Outros tipos → padrão =====
-    await sendText(from, 'Oi! Manda uma foto que eu faço virar figurinha 😎 (ou use !piada / !pergunta / !lila)');
+    // ===== Outros tipos → ignora ou responde curto =====
+    return res.sendStatus(200);
   } catch (e) {
     console.error('Erro no webhook:', e?.response?.data || e.message);
+    return res.sendStatus(200);
   }
-  return res.sendStatus(200);
 });
 
 // Healthcheck
 app.get('/', (_, res) => res.send('ok'));
-app.listen(PORT, () => console.log(`Webhook ON :${PORT}`));
+app.listen(process.env.PORT || PORT, () => console.log(`Webhook ON :${process.env.PORT || PORT}`));
